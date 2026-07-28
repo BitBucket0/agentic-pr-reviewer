@@ -18,9 +18,9 @@ Or into an environment:
 pip install agentic-pr-reviewer
 ```
 
-In security-sensitive workflows, pin the version (e.g. `agentic-pr-reviewer==0.1.0`).
+In security-sensitive workflows, pin the version (e.g. `agentic-pr-reviewer==0.2.0`).
 
-Requires `OPENAI_API_KEY` (set in a `.env` in the directory you run from, or exported in your shell). Run the command from your repository root so its `.env` is picked up.
+Set one provider API key (in a `.env` in the directory you run from, or exported in your shell). Run the command from your repository root so its `.env` is picked up. See [Providers](#providers) for non-OpenAI options.
 
 ## Usage
 
@@ -33,9 +33,37 @@ agentic-pr-reviewer --repo ./my-project --base main
 
 # Review a saved unified diff and save the report
 agentic-pr-reviewer --diff changes.diff --output review.md
+
+# Pick a provider/model and allow more reviewer<->verifier retries
+agentic-pr-reviewer --provider anthropic --model claude-3-5-sonnet-latest --max-retries 3
 ```
 
 `--repo` and `--diff` are mutually exclusive; with neither, the current directory is used. Deterministic checks are **opt-in** via `--run-checks` (see Security).
+
+## Providers
+
+The reviewer auto-detects the provider from whichever API key is set, so you only have to export a key:
+
+| Provider | Install | API key | Default model |
+|----------|---------|---------|---------------|
+| OpenAI | (bundled) | `OPENAI_API_KEY` | `gpt-4o-mini` |
+| Anthropic | `pip install "agentic-pr-reviewer[anthropic]"` | `ANTHROPIC_API_KEY` | `claude-3-5-sonnet-latest` |
+| Google Gemini | `pip install "agentic-pr-reviewer[google]"` | `GOOGLE_API_KEY` | `gemini-1.5-flash` |
+| Groq | `pip install "agentic-pr-reviewer[groq]"` | `GROQ_API_KEY` | `llama-3.3-70b-versatile` |
+| Mistral | `pip install "agentic-pr-reviewer[mistral]"` | `MISTRAL_API_KEY` | `mistral-small-latest` |
+
+Install every provider with `pip install "agentic-pr-reviewer[all]"`.
+
+- **Auto-detection:** if exactly one key is set, it is used. If several are set, choose with `--provider` (or `PR_REVIEWER_PROVIDER`). If none are set, the command exits with a clear error.
+- **Model:** override the default with `--model` (or `PR_REVIEWER_MODEL`; `OPENAI_MODEL` still works for OpenAI).
+
+## Retries
+
+The reviewer critiques its own findings and can retry with feedback. `--max-retries` controls the budget (default `1`):
+
+- `--max-retries 0` — single pass, no retry.
+- `--max-retries N` — up to N retries.
+- `--max-retries unlimited` — retry until the verifier is satisfied, still bounded by an internal safety cap (LangGraph requires a finite recursion limit).
 
 ## Why LangGraph
 
@@ -126,7 +154,25 @@ These verify control flow and failure behavior — not model accuracy. A labeled
 
 ## Publishing (maintainers)
 
-Releases go out via `publish.yml` on a `v*` tag using PyPI Trusted Publishing (OIDC, no stored token). One-time: configure a PyPI "pending publisher" for this project, repo, and `publish.yml` (environment `pypi`). Local rehearsal:
+Releases go out via `publish.yml` on a `v*` tag using PyPI Trusted Publishing (OIDC, no stored token).
+
+One-time PyPI setup (cannot be automated from CI): at pypi.org, create/verify the account, then Publishing -> add a pending Trusted Publisher with:
+
+| Field | Value |
+|-------|-------|
+| PyPI Project Name | `agentic-pr-reviewer` |
+| Owner | `BitBucket0` |
+| Repository | `agentic-pr-reviewer` |
+| Workflow | `publish.yml` |
+| Environment | `pypi` |
+
+Then cut a release:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0   # triggers publish.yml
+```
+
+Local rehearsal before tagging:
 
 ```bash
 rm -rf build dist && python -m build && python -m twine check dist/*
@@ -136,7 +182,7 @@ rm -rf build dist && python -m build && python -m twine check dist/*
 
 - Python-focused (ruff/pytest checks). Other languages get diff-only LLM review.
 - No measured detection accuracy yet (see tests note above).
-- Single bounded retry; not a full autonomous agent.
+- Configurable retry loop, but not a fully autonomous multi-tool agent.
 
 ## Project layout
 

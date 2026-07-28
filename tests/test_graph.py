@@ -213,6 +213,50 @@ def _valid_finding_dict(file: str = "greeting.py") -> dict:
     }
 
 
+def test_max_retries_allows_multiple_loops():
+    weak = ReviewResult(findings=[Finding(**_valid_finding_dict())])
+    review = _FakeReviewLLM(weak)
+    verify = _FakeVerifyLLM(
+        VerificationResult(
+            verdicts=[FindingVerdict(finding_index=0, accepted=False, reason="vague")],
+            needs_retry=True,
+            feedback="be specific",
+        )
+    )
+    set_llm_factories(lambda: review, lambda: verify)
+
+    diff = (EXAMPLES / "clean_change.diff").read_text()
+    graph = build_graph()
+    result = graph.invoke(
+        {"diff": diff, "retry_count": 0, "max_retries": 3},
+        config={"recursion_limit": 50},
+    )
+
+    assert review.calls == 4  # 1 initial + 3 retries
+    assert verify.calls == 4
+    assert result["retry_count"] == 3
+
+
+def test_max_retries_zero_disables_retry():
+    weak = ReviewResult(findings=[Finding(**_valid_finding_dict())])
+    review = _FakeReviewLLM(weak)
+    verify = _FakeVerifyLLM(
+        VerificationResult(
+            verdicts=[FindingVerdict(finding_index=0, accepted=False, reason="vague")],
+            needs_retry=True,
+        )
+    )
+    set_llm_factories(lambda: review, lambda: verify)
+
+    diff = (EXAMPLES / "clean_change.diff").read_text()
+    graph = build_graph()
+    result = graph.invoke({"diff": diff, "retry_count": 0, "max_retries": 0})
+
+    assert review.calls == 1
+    assert verify.calls == 1
+    assert result["retry_count"] == 0
+
+
 def test_all_malformed_output_is_reviewer_failed():
     class BrokenReview:
         def invoke(self, _messages):
