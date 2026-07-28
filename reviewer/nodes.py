@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import time
 from collections.abc import Callable
 from typing import Any
@@ -17,6 +16,7 @@ from reviewer.diff_utils import (
     validate_diff,
 )
 from reviewer.prompts import REVIEW_SYSTEM, REVIEW_USER, VERIFY_SYSTEM, VERIFY_USER
+from reviewer.providers import build_llm
 from reviewer.schemas import Finding, ReviewResult, VerificationResult
 from reviewer.state import ReviewState
 
@@ -38,28 +38,16 @@ def set_llm_factories(
     _verify_llm_factory = verify_factory
 
 
-def _default_model_name() -> str:
-    return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-
-
 def _build_review_llm() -> Any:
     if _review_llm_factory is not None:
         return _review_llm_factory()
-    from langchain_openai import ChatOpenAI
-
-    return ChatOpenAI(model=_default_model_name(), temperature=0).with_structured_output(
-        ReviewResult
-    )
+    return build_llm(ReviewResult)
 
 
 def _build_verify_llm() -> Any:
     if _verify_llm_factory is not None:
         return _verify_llm_factory()
-    from langchain_openai import ChatOpenAI
-
-    return ChatOpenAI(model=_default_model_name(), temperature=0).with_structured_output(
-        VerificationResult
-    )
+    return build_llm(VerificationResult)
 
 
 def _is_terminal(state: ReviewState) -> bool:
@@ -271,7 +259,10 @@ def verify_findings(state: ReviewState) -> dict[str, Any]:
         accepted = []
 
     retry_count = state.get("retry_count", 0)
-    needs_retry = bool(result.needs_retry) and retry_count < 1 and not accepted
+    max_retries = state.get("max_retries", 1)
+    needs_retry = (
+        bool(result.needs_retry) and retry_count < max_retries and not accepted
+    )
 
     return {
         "verified_findings": accepted,

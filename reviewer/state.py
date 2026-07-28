@@ -48,6 +48,7 @@ class ReviewState(TypedDict, total=False):
     verification_feedback: str
     needs_retry: bool
     retry_count: int
+    max_retries: int
 
     # Outcome
     status: ReviewStatus

@@ -18,6 +18,8 @@ def route_after_verification(state: ReviewState) -> str:
         "input_error",
     }:
         return "finish"
-    if state.get("needs_retry") and state.get("retry_count", 0) < 1:
+    if state.get("needs_retry") and state.get("retry_count", 0) < state.get(
+        "max_retries", 1
+    ):
         return "retry"
     return "finish"
