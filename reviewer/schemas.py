@@ -4,7 +4,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-
 Severity = Literal["low", "medium", "high"]
 Category = Literal[
     "correctness",

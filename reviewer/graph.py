@@ -13,7 +13,7 @@ from reviewer.nodes import (
     run_checks,
     verify_findings,
 )
-from reviewer.routes import route_after_verification
+from reviewer.routes import route_after_review, route_after_verification
 from reviewer.state import ReviewState
 
 
@@ -33,7 +33,14 @@ def build_graph():
     builder.add_edge("load_diff", "identify_files")
     builder.add_edge("identify_files", "run_checks")
     builder.add_edge("run_checks", "review_code")
-    builder.add_edge("review_code", "verify_findings")
+    builder.add_conditional_edges(
+        "review_code",
+        route_after_review,
+        {
+            "verify": "verify_findings",
+            "report": "generate_report",
+        },
+    )
     builder.add_conditional_edges(
         "verify_findings",
         route_after_verification,
