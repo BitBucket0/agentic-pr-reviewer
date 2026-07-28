@@ -1,44 +1,53 @@
 # Agentic Pull Request Reviewer
 
-A LangGraph workflow that reviews a local Git diff, runs deterministic checks (pytest / ruff), proposes structured findings with an LLM, critiques those findings with a verifier, and prints a Markdown PR review.
+A LangGraph workflow that reviews a Git diff, optionally runs deterministic checks (pytest / ruff), proposes structured findings with an LLM, critiques those findings with a verifier, and prints a Markdown PR review. It fails closed: model or verifier failures are reported as incomplete, never as a clean bill of health.
+
+## Install
+
+Isolated CLI install (recommended — does not pollute a project's environment):
 
 ```bash
-python main.py --diff examples/buggy_null.diff
+pipx install agentic-pr-reviewer
 # or
-python main.py --repo ./my-project --base HEAD~1
+uv tool install agentic-pr-reviewer
 ```
 
-Requires `OPENAI_API_KEY` (set in `.env` or exported in your shell).
+Or into an environment:
+
+```bash
+pip install agentic-pr-reviewer
+```
+
+In security-sensitive workflows, pin the version (e.g. `agentic-pr-reviewer==0.1.0`).
+
+Requires `OPENAI_API_KEY` (set in a `.env` in the directory you run from, or exported in your shell). Run the command from your repository root so its `.env` is picked up.
+
+## Usage
+
+```bash
+# Review the current repo against the previous commit
+agentic-pr-reviewer --base HEAD~1
+
+# Review a specific repo / base
+agentic-pr-reviewer --repo ./my-project --base main
+
+# Review a saved unified diff and save the report
+agentic-pr-reviewer --diff changes.diff --output review.md
+```
+
+`--repo` and `--diff` are mutually exclusive; with neither, the current directory is used. Deterministic checks are **opt-in** via `--run-checks` (see Security).
 
 ## Why LangGraph
 
 LangGraph models the review as an explicit state machine:
 
-- **State** is the shared clipboard (diff, findings, retry count, report).
+- **State** is the shared clipboard (diff, findings, status, retry count, report).
 - **Nodes** are single-purpose functions (load, check, review, verify, report).
-- **Edges** (including conditional ones) decide the next step — including a bounded reviewer → verifier retry loop.
+- **Edges** (including conditional ones) decide the next step — including skipping verification when the reviewer fails and a bounded reviewer -> verifier retry loop.
 
 That makes the agentic loop inspectable and testable, instead of burying control flow inside one prompt.
 
 ## Architecture
-
-```text
-START
-  ↓
-load_diff
-  ↓
-identify_files
-  ↓
-run_checks          (pytest / ruff — no LLM)
-  ↓
-review_code         (LLM → structured findings)
-  ↓
-verify_findings     (LLM → accept / reject)
-  ↓
-route_after_verification
-  ├── retry (max 1) → prepare_retry → review_code
-  └── finish → generate_report → END
-```
 
 ```mermaid
 flowchart TD
@@ -46,125 +55,95 @@ flowchart TD
   loadDiff --> identifyFiles[identify_files]
   identifyFiles --> runChecks[run_checks]
   runChecks --> reviewCode[review_code]
-  reviewCode --> verifyFindings[verify_findings]
+  reviewCode --> routeReview{route_after_review}
+  routeReview -->|reviewer_failed| generateReport[generate_report]
+  routeReview -->|ok| verifyFindings[verify_findings]
   verifyFindings --> route{route_after_verification}
-  route -->|retry| prepareRetry[prepare_retry]
+  route -->|retry max 1| prepareRetry[prepare_retry]
   prepareRetry --> reviewCode
-  route -->|finish| generateReport[generate_report]
+  route -->|finish| generateReport
   generateReport --> END([END])
 ```
 
-## Node descriptions
-
 | Node | Role |
 |------|------|
-| `load_diff` | Validate / load the patch; reject empty or oversized diffs |
+| `load_diff` | Validate / load the patch; reject empty or oversized diffs (`input_error`) |
 | `identify_files` | Parse changed file paths from the unified diff |
-| `run_checks` | Run ruff and pytest when `--repo` is provided |
-| `review_code` | LLM review focused on real defects; uses verifier feedback on retry |
-| `verify_findings` | LLM critique; rejects unsupported / vague findings |
+| `run_checks` | Run ruff and pytest, only when `--run-checks` is set |
+| `review_code` | LLM review focused on real defects; drops findings outside the diff; fails closed on model errors |
+| `verify_findings` | LLM critique; rejects unsupported findings; never promotes unverified candidates |
 | `prepare_retry` | Increment `retry_count` (budget: 1) |
-| `generate_report` | Emit Markdown + stats (files, rejected count, elapsed time) |
+| `generate_report` | Emit status-aware Markdown + stats |
 
-## Setup
+## Review status
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # then edit .env and set OPENAI_API_KEY=sk-...
-```
+Every run ends with a `status` that the report and CLI exit code reflect:
 
-## Example input
+| Status | Meaning | Exit code |
+|--------|---------|-----------|
+| `success` | Completed; every surviving finding was verified | 0 |
+| `partial` | Completed with warnings (malformed/out-of-diff findings dropped, or checks unavailable) | 0 |
+| `input_error` | Empty, oversized, or unparseable diff | 2 |
+| `reviewer_failed` | Reviewer model errored or returned only malformed output | 1 |
+| `verifier_failed` | Verifier errored; candidates surfaced as unverified, never confirmed | 1 |
 
-`examples/buggy_null.diff` removes a null check:
+A `partial` or failed run is never reported as "No verified defects found".
 
-```python
-user = self.repository.find_by_id(user_id)
-return user.email  # AttributeError if user is None
-```
+## Security model
 
-## Example output
+- **Secret-free CI** ([.github/workflows/ci.yml](.github/workflows/ci.yml)): runs ruff + pytest on PR code. It holds no secrets, so executing untrusted PR code is safe.
+- **Trusted review** ([.github/workflows/pr-review.yml](.github/workflows/pr-review.yml)): uses `pull_request_target` (which has secrets), so it **never checks out or executes PR head code**. It installs the trusted reviewer from the base branch and reads the PR diff as data via the GitHub API, then posts a sticky comment.
+- **Local checks are opt-in**: `--run-checks` runs the target repo's pytest/ruff, which executes that repo's code. It is off by default and prints a warning; only enable it for repositories you trust.
+- **Prompt-injection**: the diff, comments, filenames, and tool output are treated as untrusted data in both system prompts; instructions embedded in them are ignored.
 
-```markdown
-# PR Review
+## Privacy
 
-## High severity
-
-### Correctness
-**File:** user_service.py, line 15
-
-find_by_id may return None before .email is accessed.
-
-**Suggested fix:**
-
-Check for None and raise LookupError.
-
-## Automated checks
-
-- Skipped static checks: no --repo provided.
-
-## Stats
-
-- Files reviewed: 1
-- Candidate findings: 1
-- Verified findings: 1
-- Findings rejected by verifier: 0
-- Review retries: 0
-- Elapsed seconds: 2.41
-```
-
-## Failure-handling rules
-
-- Empty diffs fail with a clear error before any LLM call.
-- Diffs larger than 100,000 characters are rejected.
-- Invalid structured model output is dropped rather than crashing the graph.
-- Verifier failures keep candidates (best-effort) and do not spin forever.
-- At most **one** review retry; LangGraph `recursion_limit` is an extra safeguard.
-- Missing `ruff` / `pytest` is reported as skipped, not fatal.
-
-## Evaluation
-
-Three fixture diffs under `examples/`:
-
-| Fixture | Expectation |
-|---------|-------------|
-| `buggy_null.diff` | Verified `correctness` finding (null / index risk) |
-| `clean_change.diff` | No verified defects after verifier rejects fluff |
-| `failing_test/` | `pytest` reports failure in static checks |
-
-Run the automated suite (LLM calls mocked):
-
-```bash
-pytest -q
-```
-
-Do not claim false-positive reduction percentages without measuring against a labeled set.
+The diff (and, with `--run-checks`, test/lint output) is sent to the configured model provider (OpenAI by default). Do not run it on diffs you cannot share with that provider. Secrets and environment variables are never sent to the model.
 
 ## GitHub integration
 
-A GitHub Actions workflow ([.github/workflows/pr-review.yml](.github/workflows/pr-review.yml)) reviews every pull request automatically and posts the Markdown review as a single, auto-updating PR comment.
+| Workflow | Trigger | Output | Secrets |
+|----------|---------|--------|---------|
+| `ci.yml` | PR + push to main | check status | none |
+| `pr-review.yml` | `pull_request_target` (opened/synchronize/reopened) | sticky PR comment | `OPENAI_API_KEY` |
+| `commit-review.yml` | push to `main` | job summary + artifact | `OPENAI_API_KEY` |
+| `publish.yml` | tag `v*` | PyPI release (Trusted Publishing) | none (OIDC) |
 
-- Triggers on PR `opened`, `synchronize` (new commits), and `reopened`.
-- Checks out the PR head with full history and diffs against the PR base SHA.
-- Advisory only: the check is always green and never blocks merges.
-- Re-uses one comment per PR (matched by a hidden marker) instead of stacking.
+**One-time setup:** add `OPENAI_API_KEY` under repo Settings > Secrets and variables > Actions. Optionally set an `OPENAI_MODEL` variable (default `gpt-4o-mini`).
 
-**One-time setup:** add your key as a repo secret so CI can call OpenAI:
+**Caveat:** GitHub does not expose secrets to pull requests from forks, so those PRs post a "skipped" note.
 
-1. GitHub repo > Settings > Secrets and variables > Actions > New repository secret
-2. Name `OPENAI_API_KEY`, value `sk-...`
-3. (Optional) add a repository variable `OPENAI_MODEL` to override the default `gpt-4o-mini`
+## Deterministic and trajectory tests
 
-**Caveat:** GitHub does not expose secrets to pull requests opened from forks, so those PRs post a "skipped" note instead of a review. Branches pushed directly to this repo are reviewed normally.
+Automated tests (LLM calls mocked) cover input validation, routing, fail-closed statuses, out-of-diff/path-normalized filtering, and CLI exit codes:
+
+```bash
+pip install -e ".[checks]"
+pytest -q
+```
+
+These verify control flow and failure behavior — not model accuracy. A labeled evaluation of real review quality is future work; no accuracy percentages are claimed until measured.
+
+## Publishing (maintainers)
+
+Releases go out via `publish.yml` on a `v*` tag using PyPI Trusted Publishing (OIDC, no stored token). One-time: configure a PyPI "pending publisher" for this project, repo, and `publish.yml` (environment `pypi`). Local rehearsal:
+
+```bash
+rm -rf build dist && python -m build && python -m twine check dist/*
+```
+
+## Limitations
+
+- Python-focused (ruff/pytest checks). Other languages get diff-only LLM review.
+- No measured detection accuracy yet (see tests note above).
+- Single bounded retry; not a full autonomous agent.
 
 ## Project layout
 
 ```text
-reviewer/          # LangGraph package (state, nodes, routes, graph, …)
+reviewer/          # LangGraph package (state, schemas, prompts, nodes, routes, graph, cli)
 examples/          # Sample diffs + tiny failing pytest package
-tests/             # Unit + graph trajectory tests
-.github/workflows/ # PR review CI workflow
-main.py            # CLI
-requirements.txt
+tests/             # Unit, graph trajectory, and CLI tests
+.github/workflows/ # ci, pr-review, commit-review, publish
+pyproject.toml     # packaging + dependencies
 ```
