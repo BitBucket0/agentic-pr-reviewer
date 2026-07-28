@@ -1,0 +1,12 @@
+diff --git a/greeting.py b/greeting.py
+index 3333333..4444444 100644
+--- a/greeting.py
++++ b/greeting.py
+@@ -1,5 +1,6 @@
+ def greet(name: str) -> str:
+-    """Return a greeting."""
++    """Return a friendly greeting for the given name."""
+     return f"Hello, {name}!"
++
++
++# No behavioral change beyond documentation.

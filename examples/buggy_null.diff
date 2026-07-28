@@ -1,0 +1,22 @@
+diff --git a/user_service.py b/user_service.py
+index 1111111..2222222 100644
+--- a/user_service.py
++++ b/user_service.py
+@@ -10,8 +10,12 @@ class UserService:
+     def __init__(self, repository):
+         self.repository = repository
+ 
+-    def get_email(self, user_id: int) -> str:
+-        user = self.repository.find_by_id(user_id)
+-        if user is None:
+-            raise LookupError(f"user {user_id} not found")
+-        return user.email
++    def get_email(self, user_id: int) -> str:
++        user = self.repository.find_by_id(user_id)
++        # BUG: find_by_id may return None; calling .email will raise AttributeError
++        return user.email
++
++    def first_tag(self, user_id: int) -> str:
++        user = self.repository.find_by_id(user_id)
++        # BUG: tags may be empty; indexing [0] raises IndexError
++        return user.tags[0]

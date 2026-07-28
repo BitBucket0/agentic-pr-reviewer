@@ -1,0 +1,9 @@
+diff --git a/pkg/math_ops.py b/pkg/math_ops.py
+index 5555555..6666666 100644
+--- a/pkg/math_ops.py
++++ b/pkg/math_ops.py
+@@ -1,4 +1,6 @@
+ def divide(a: float, b: float) -> float:
+-    return a / b
++    # Regression: multiplication instead of division
++    return a * b
