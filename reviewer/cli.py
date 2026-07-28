@@ -13,12 +13,32 @@ from dotenv import find_dotenv, load_dotenv
 
 from reviewer.diff_utils import DiffError, load_diff_from_file, load_diff_from_git
 from reviewer.graph import build_graph
+from reviewer.providers import PROVIDER_NAMES, ProviderError, resolve_provider
 
 # Exit codes (see plan): 0 success/partial, 1 review incomplete/model failure,
 # 2 invalid invocation/configuration/input.
 EXIT_OK = 0
 EXIT_INCOMPLETE = 1
 EXIT_INVALID = 2
+
+# Sentinel for "unlimited" retries. LangGraph still needs a finite recursion
+# limit, so unlimited is bounded by an internal safety cap (see main()).
+UNLIMITED_RETRIES = 1_000_000
+
+
+def _max_retries_type(value: str) -> int:
+    text = value.strip().lower()
+    if text in {"unlimited", "inf", "infinite"}:
+        return UNLIMITED_RETRIES
+    try:
+        parsed = int(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "--max-retries must be a non-negative integer or 'unlimited'"
+        ) from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("--max-retries must be >= 0")
+    return parsed
 
 _STATUS_EXIT = {
     "success": EXIT_OK,
@@ -66,10 +86,25 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Git revision to diff against (default: HEAD~1)",
     )
     parser.add_argument(
+        "--provider",
+        type=str,
+        default="auto",
+        choices=("auto", *PROVIDER_NAMES),
+        help="LLM provider (default: auto-detect from whichever API key is set)",
+    )
+    parser.add_argument(
         "--model",
         type=str,
         default=None,
-        help="OpenAI model name (default: OPENAI_MODEL or gpt-4o-mini)",
+        help="Model name for the chosen provider (default: the provider's default)",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=_max_retries_type,
+        default=1,
+        metavar="N",
+        help="Max reviewer/verifier retries: 0 disables, 'unlimited' removes the "
+        "bound (still capped by an internal safety limit). Default: 1.",
     )
     parser.add_argument(
         "--output",
@@ -104,8 +139,10 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parse_args(argv)
 
+    if args.provider and args.provider != "auto":
+        os.environ["PR_REVIEWER_PROVIDER"] = args.provider
     if args.model:
-        os.environ["OPENAI_MODEL"] = args.model
+        os.environ["PR_REVIEWER_MODEL"] = args.model
 
     if args.run_checks:
         print(
@@ -114,13 +151,10 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
 
-    key = os.getenv("OPENAI_API_KEY", "")
-    if not key or key.startswith("sk-your-key"):
-        print(
-            "Error: OPENAI_API_KEY is not set. Add it to .env (see .env.example) "
-            "or export it in your shell.",
-            file=sys.stderr,
-        )
+    try:
+        resolve_provider(args.provider if args.provider != "auto" else None)
+    except ProviderError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return EXIT_INVALID
 
     try:
@@ -143,11 +177,14 @@ def main(argv: list[str] | None = None) -> int:
         "base_ref": args.base,
         "run_checks": bool(args.run_checks),
         "retry_count": 0,
+        "max_retries": args.max_retries,
         "started_at": time.time(),
     }
 
-    # recursion_limit guards against accidental infinite loops
-    result = graph.invoke(initial_state, config={"recursion_limit": 25})
+    # LangGraph needs a finite recursion limit; scale it with the retry budget
+    # but keep a hard safety cap so "unlimited" cannot loop forever.
+    recursion_limit = min(12 + args.max_retries * 4, 1000)
+    result = graph.invoke(initial_state, config={"recursion_limit": recursion_limit})
 
     markdown = result.get("review_markdown") or ""
     status = result.get("status", "success")

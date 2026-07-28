@@ -1,6 +1,6 @@
 [project]
 name = "agentic-pr-reviewer"
-version = "0.1.0"
+version = "0.2.0"
 description = "Stateful LangGraph workflow that reviews Git diffs with a reviewer-verifier loop and deterministic checks."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,6 +33,16 @@ dependencies = [
 
 [project.optional-dependencies]
 checks = ["ruff>=0.6", "pytest>=8"]
+anthropic = ["langchain-anthropic>=1.5,<2"]
+google = ["langchain-google-genai>=4.3,<5"]
+groq = ["langchain-groq>=1.1,<2"]
+mistral = ["langchain-mistralai>=1.1,<2"]
+all = [
+    "langchain-anthropic>=1.5,<2",
+    "langchain-google-genai>=4.3,<5",
+    "langchain-groq>=1.1,<2",
+    "langchain-mistralai>=1.1,<2",
+]
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6", "build", "twine"]
