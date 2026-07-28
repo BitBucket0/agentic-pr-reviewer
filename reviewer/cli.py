@@ -11,9 +11,49 @@ from pathlib import Path
 
 from dotenv import find_dotenv, load_dotenv
 
-from reviewer.diff_utils import DiffError, load_diff_from_file, load_diff_from_git
+from reviewer.diff_utils import (
+    MAX_DIFF_CHARS,
+    DiffError,
+    load_diff_from_file,
+    load_diff_from_git,
+)
 from reviewer.graph import build_graph
 from reviewer.providers import PROVIDER_NAMES, ProviderError, resolve_provider
+
+HELP_EPILOG = """\
+Examples:
+  # Review the latest commit (current repo vs its parent)
+  agentic-pr-reviewer --base HEAD~1
+
+  # Review your working changes against a branch
+  agentic-pr-reviewer --base main
+
+  # Review a different repository
+  agentic-pr-reviewer --repo ./other-project --base main
+
+  # Review a saved unified diff and write the report to a file
+  git diff main > changes.diff
+  agentic-pr-reviewer --diff changes.diff --output review.md
+
+  # Choose a provider/model and allow more reviewer<->verifier retries
+  agentic-pr-reviewer --provider anthropic --model claude-3-5-sonnet-latest --max-retries 3
+
+  # Raise the diff size cap (large diffs are otherwise truncated)
+  agentic-pr-reviewer --max-diff-chars 250000
+
+Providers (auto-detected from whichever API key is set):
+  openai     OPENAI_API_KEY      (bundled)
+  anthropic  ANTHROPIC_API_KEY   pip install "agentic-pr-reviewer[anthropic]"
+  google     GOOGLE_API_KEY      pip install "agentic-pr-reviewer[google]"
+  groq       GROQ_API_KEY        pip install "agentic-pr-reviewer[groq]"
+  mistral    MISTRAL_API_KEY     pip install "agentic-pr-reviewer[mistral]"
+  Override with --provider / PR_REVIEWER_PROVIDER and --model / PR_REVIEWER_MODEL.
+
+Exit codes:
+  0  success or completed-with-warnings (partial)
+  1  review incomplete (model/verifier failure)
+  2  invalid input or configuration (bad diff, no/ambiguous API key)
+"""
 
 # Exit codes (see plan): 0 success/partial, 1 review incomplete/model failure,
 # 2 invalid invocation/configuration/input.
@@ -59,7 +99,19 @@ def _package_version() -> str:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="agentic-pr-reviewer",
-        description="Review a Git diff with a LangGraph agentic workflow.",
+        description="Review a Git diff with a LangGraph agentic reviewer/verifier "
+        "workflow. Auto-detects the LLM provider from your API key.",
+        epilog=HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        add_help=False,
+    )
+    parser.add_argument(
+        "-h",
+        "-help",
+        "--help",
+        action="help",
+        default=argparse.SUPPRESS,
+        help="Show this help message (with usage examples) and exit",
     )
     parser.add_argument(
         "--version",
@@ -105,6 +157,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="N",
         help="Max reviewer/verifier retries: 0 disables, 'unlimited' removes the "
         "bound (still capped by an internal safety limit). Default: 1.",
+    )
+    parser.add_argument(
+        "--max-diff-chars",
+        type=int,
+        default=MAX_DIFF_CHARS,
+        metavar="N",
+        help="Cap the diff at N characters; larger diffs are truncated and the "
+        f"review is marked partial (default: {MAX_DIFF_CHARS}).",
     )
     parser.add_argument(
         "--output",
@@ -178,6 +238,7 @@ def main(argv: list[str] | None = None) -> int:
         "run_checks": bool(args.run_checks),
         "retry_count": 0,
         "max_retries": args.max_retries,
+        "max_diff_chars": args.max_diff_chars,
         "started_at": time.time(),
     }
 

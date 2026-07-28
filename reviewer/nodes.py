@@ -9,10 +9,12 @@ from typing import Any
 
 from reviewer.checks import run_static_checks
 from reviewer.diff_utils import (
+    MAX_DIFF_CHARS,
     DiffError,
     extract_changed_files,
     load_diff_from_file,
     load_diff_from_git,
+    truncate_to_limit,
     validate_diff,
 )
 from reviewer.prompts import REVIEW_SYSTEM, REVIEW_USER, VERIFY_SYSTEM, VERIFY_USER
@@ -91,7 +93,17 @@ def load_diff(state: ReviewState) -> dict[str, Any]:
             )
         else:
             raise DiffError("Provide --diff or --repo so a patch can be loaded.")
+        max_chars = state.get("max_diff_chars") or MAX_DIFF_CHARS
+        diff, truncated = truncate_to_limit(diff, max_chars)
         updates["diff"] = diff
+        if truncated:
+            updates["status"] = "partial"
+            updates["warnings"] = [
+                (
+                    f"Diff exceeded {max_chars} chars and was truncated; "
+                    "only the first part was reviewed."
+                )
+            ]
     except DiffError as exc:
         updates["error"] = str(exc)
         updates["status"] = "input_error"

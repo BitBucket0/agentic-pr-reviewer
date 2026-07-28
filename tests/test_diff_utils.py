@@ -8,6 +8,7 @@ from reviewer.diff_utils import (
     DiffError,
     extract_changed_files,
     load_diff_from_file,
+    truncate_to_limit,
     validate_diff,
 )
 
@@ -20,9 +21,24 @@ def test_validate_empty_diff_fails():
         validate_diff("   \n  ")
 
 
-def test_validate_oversized_diff_fails():
-    with pytest.raises(DiffError, match="too large"):
-        validate_diff("x" * 100_001)
+def test_validate_large_diff_no_longer_raises():
+    # Oversized diffs are handled by truncation, not rejection.
+    assert validate_diff("x" * 100_001) == "x" * 100_001
+
+
+def test_truncate_to_limit_truncates_large_diff():
+    text = "line\n" * 1000
+    out, truncated = truncate_to_limit(text, 100)
+    assert truncated is True
+    assert len(out) < len(text)
+    assert "truncated" in out
+    assert "review is partial" in out
+
+
+def test_truncate_to_limit_leaves_small_diff_unchanged():
+    out, truncated = truncate_to_limit("small diff", 100)
+    assert truncated is False
+    assert out == "small diff"
 
 
 def test_extract_changed_files_from_buggy_example():

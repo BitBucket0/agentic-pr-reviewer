@@ -53,15 +53,35 @@ def _is_git_worktree(repo: Path) -> bool:
 
 
 def validate_diff(diff: str) -> str:
-    """Reject empty or excessively large diffs."""
+    """Reject empty diffs. Oversized diffs are handled by truncation, not errors."""
     text = diff.strip()
     if not text:
         raise DiffError("Diff is empty — nothing to review.")
-    if len(text) > MAX_DIFF_CHARS:
-        raise DiffError(
-            f"Diff is too large ({len(text)} chars; max {MAX_DIFF_CHARS})."
-        )
     return text
+
+
+def truncate_to_limit(
+    diff: str, max_chars: int = MAX_DIFF_CHARS
+) -> tuple[str, bool]:
+    """Cap a diff at ``max_chars`` characters, cutting on a line boundary.
+
+    Returns ``(text, truncated)``. When truncation happens, a marker line is
+    appended so the reviewer knows the patch is incomplete. A diff at or under
+    the limit is returned unchanged with ``truncated=False``.
+    """
+    if max_chars <= 0 or len(diff) <= max_chars:
+        return diff, False
+
+    clipped = diff[:max_chars]
+    # Prefer to cut at the last newline so we don't split a line mid-token.
+    newline = clipped.rfind("\n")
+    if newline > 0:
+        clipped = clipped[:newline]
+    marker = (
+        f"\n... [diff truncated to {max_chars} chars; "
+        f"{len(diff)} chars total — review is partial] ..."
+    )
+    return clipped + marker, True
 
 
 def extract_changed_files(diff: str) -> list[str]:

@@ -14,7 +14,8 @@ ReviewStatus = Literal[
 
 - ``success``: the workflow completed and every surviving finding was verified
   (an empty verified list here means the model genuinely found nothing).
-- ``input_error``: the diff was empty, too large, or unparseable.
+- ``input_error``: the diff was empty or unparseable. (Oversized diffs are
+  truncated and reported as ``partial``, not rejected.)
 - ``reviewer_failed``: the reviewer model raised, could not be constructed, or
   returned output that was entirely malformed.
 - ``verifier_failed``: the verifier model raised or could not be constructed;
@@ -33,6 +34,7 @@ class ReviewState(TypedDict, total=False):
     repo_path: str | None
     base_ref: str
     run_checks: bool
+    max_diff_chars: int
 
     # Diff analysis
     changed_files: list[str]

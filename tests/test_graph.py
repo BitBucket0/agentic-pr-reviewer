@@ -213,6 +213,23 @@ def _valid_finding_dict(file: str = "greeting.py") -> dict:
     }
 
 
+def test_oversized_diff_is_truncated_and_partial():
+    set_llm_factories(
+        lambda: _FakeReviewLLM(ReviewResult(findings=[])),
+        lambda: _FakeVerifyLLM(VerificationResult()),
+    )
+    diff = (EXAMPLES / "clean_change.diff").read_text()
+    graph = build_graph()
+    # A tiny cap forces truncation while keeping the diff header (so files parse).
+    result = graph.invoke(
+        {"diff": diff, "retry_count": 0, "max_diff_chars": 120}
+    )
+
+    assert result["status"] == "partial"
+    assert "truncated" in result["review_markdown"].lower()
+    assert result["changed_files"] == ["greeting.py"]
+
+
 def test_max_retries_allows_multiple_loops():
     weak = ReviewResult(findings=[Finding(**_valid_finding_dict())])
     review = _FakeReviewLLM(weak)

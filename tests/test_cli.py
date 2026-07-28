@@ -107,6 +107,23 @@ def test_max_retries_invalid_rejected():
         parse_args(["--max-retries", "lots"])
 
 
+def test_help_aliases_exit_zero(capsys):
+    from reviewer.diff_utils import MAX_DIFF_CHARS
+
+    for flag in ("-h", "-help", "--help"):
+        with pytest.raises(SystemExit) as exc:
+            parse_args([flag])
+        assert exc.value.code == 0
+        out = capsys.readouterr().out
+        assert "Examples:" in out
+    # sanity: default cap is exposed
+    assert parse_args([]).max_diff_chars == MAX_DIFF_CHARS
+
+
+def test_max_diff_chars_parsing():
+    assert parse_args(["--max-diff-chars", "5000"]).max_diff_chars == 5000
+
+
 def test_provider_selection_reaches_graph():
     _clean_factories()
     code = main(["--diff", str(EXAMPLES / "clean_change.diff"), "--provider", "openai"])
