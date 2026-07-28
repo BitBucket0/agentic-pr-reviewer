@@ -74,8 +74,9 @@ def test_empty_diff_fails_cleanly():
     graph = build_graph()
     result = graph.invoke({"diff": "", "retry_count": 0})
     assert result.get("error")
+    assert result["status"] == "input_error"
     assert "empty" in result["error"].lower()
-    assert "Error" in result["review_markdown"]
+    assert "input error" in result["review_markdown"].lower()
 
 
 def test_buggy_change_keeps_correctness_finding():
@@ -201,24 +202,125 @@ def test_graph_stops_after_retry_limit():
     assert len(result["verified_findings"]) == 1
 
 
-def test_invalid_model_output_handled():
+def _valid_finding_dict(file: str = "greeting.py") -> dict:
+    return {
+        "file": file,
+        "line": 2,
+        "severity": "low",
+        "category": "correctness",
+        "explanation": "concrete failure scenario",
+        "suggested_fix": "do the fix",
+    }
+
+
+def test_all_malformed_output_is_reviewer_failed():
     class BrokenReview:
         def invoke(self, _messages):
             return {"findings": [{"not": "a valid finding"}]}
 
-    class BrokenVerify:
-        def invoke(self, _messages):
-            raise RuntimeError("boom")
-
-    set_llm_factories(lambda: BrokenReview(), lambda: BrokenVerify())
+    verify = _FakeVerifyLLM(VerificationResult())
+    set_llm_factories(lambda: BrokenReview(), lambda: verify)
     diff = (EXAMPLES / "clean_change.diff").read_text()
     graph = build_graph()
     result = graph.invoke({"diff": diff, "retry_count": 0})
 
-    # Invalid findings are dropped; verifier exception keeps empty candidates safely
-    assert result.get("review_markdown")
-    assert "Error:" not in result["review_markdown"] or True
-    assert isinstance(result.get("verified_findings"), list)
+    assert result["status"] == "reviewer_failed"
+    assert result["verified_findings"] == []
+    assert "No verified defects" not in result["review_markdown"]
+    assert "review incomplete" in result["review_markdown"].lower()
+    # Verifier must never run once the reviewer failed.
+    assert verify.calls == 0
+
+
+def test_reviewer_failure_is_not_reported_as_clean():
+    def boom():
+        raise RuntimeError("model down")
+
+    verify = _FakeVerifyLLM(VerificationResult())
+    set_llm_factories(boom, lambda: verify)
+    diff = (EXAMPLES / "clean_change.diff").read_text()
+    graph = build_graph()
+    result = graph.invoke({"diff": diff, "retry_count": 0})
+
+    assert result["status"] == "reviewer_failed"
+    assert result["verified_findings"] == []
+    assert "No verified defects" not in result["review_markdown"]
+    assert "review incomplete" in result["review_markdown"].lower()
+    assert verify.calls == 0
+
+
+def test_verifier_failure_does_not_promote_candidates():
+    review = _FakeReviewLLM(
+        ReviewResult(findings=[Finding(**_valid_finding_dict())])
+    )
+
+    class BrokenVerify:
+        def invoke(self, _messages):
+            raise RuntimeError("verifier down")
+
+    set_llm_factories(lambda: review, lambda: BrokenVerify())
+    diff = (EXAMPLES / "clean_change.diff").read_text()
+    graph = build_graph()
+    result = graph.invoke({"diff": diff, "retry_count": 0})
+
+    assert result["status"] == "verifier_failed"
+    assert result["verified_findings"] == []
+    assert len(result["unverified_findings"]) == 1
+    assert "unverified candidate findings" in result["review_markdown"].lower()
+
+
+def test_partial_malformed_findings_are_reported_with_warning():
+    class MixedReview:
+        def invoke(self, _messages):
+            return {"findings": [_valid_finding_dict(), {"bad": "finding"}]}
+
+    verify = _FakeVerifyLLM(
+        VerificationResult(
+            verdicts=[FindingVerdict(finding_index=0, accepted=True, reason="ok")]
+        )
+    )
+    set_llm_factories(lambda: MixedReview(), lambda: verify)
+    diff = (EXAMPLES / "clean_change.diff").read_text()
+    graph = build_graph()
+    result = graph.invoke({"diff": diff, "retry_count": 0})
+
+    assert result["status"] == "partial"
+    assert "malformed" in result["review_markdown"].lower()
+    assert "No verified defects" not in result["review_markdown"]
+
+
+def test_outside_diff_file_is_dropped():
+    review = _FakeReviewLLM(
+        ReviewResult(findings=[Finding(**_valid_finding_dict(file="not_in_diff.py"))])
+    )
+    verify = _FakeVerifyLLM(VerificationResult())
+    set_llm_factories(lambda: review, lambda: verify)
+    diff = (EXAMPLES / "clean_change.diff").read_text()
+    graph = build_graph()
+    result = graph.invoke({"diff": diff, "retry_count": 0})
+
+    assert result["status"] == "partial"
+    assert result["verified_findings"] == []
+    assert "outside the diff" in result["review_markdown"].lower()
+
+
+def test_path_prefixes_are_normalized():
+    review = _FakeReviewLLM(
+        ReviewResult(findings=[Finding(**_valid_finding_dict(file="b/greeting.py"))])
+    )
+    verify = _FakeVerifyLLM(
+        VerificationResult(
+            verdicts=[FindingVerdict(finding_index=0, accepted=True, reason="ok")]
+        )
+    )
+    set_llm_factories(lambda: review, lambda: verify)
+    diff = (EXAMPLES / "clean_change.diff").read_text()
+    graph = build_graph()
+    result = graph.invoke({"diff": diff, "retry_count": 0})
+
+    # b/greeting.py normalizes to greeting.py which is in the diff -> kept & verified.
+    assert result["status"] == "success"
+    assert len(result["verified_findings"]) == 1
 
 
 def test_failing_test_static_checks_capture_failure():
