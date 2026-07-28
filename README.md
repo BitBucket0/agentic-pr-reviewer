@@ -141,12 +141,30 @@ pytest -q
 
 Do not claim false-positive reduction percentages without measuring against a labeled set.
 
+## GitHub integration
+
+A GitHub Actions workflow ([.github/workflows/pr-review.yml](.github/workflows/pr-review.yml)) reviews every pull request automatically and posts the Markdown review as a single, auto-updating PR comment.
+
+- Triggers on PR `opened`, `synchronize` (new commits), and `reopened`.
+- Checks out the PR head with full history and diffs against the PR base SHA.
+- Advisory only: the check is always green and never blocks merges.
+- Re-uses one comment per PR (matched by a hidden marker) instead of stacking.
+
+**One-time setup:** add your key as a repo secret so CI can call OpenAI:
+
+1. GitHub repo > Settings > Secrets and variables > Actions > New repository secret
+2. Name `OPENAI_API_KEY`, value `sk-...`
+3. (Optional) add a repository variable `OPENAI_MODEL` to override the default `gpt-4o-mini`
+
+**Caveat:** GitHub does not expose secrets to pull requests opened from forks, so those PRs post a "skipped" note instead of a review. Branches pushed directly to this repo are reviewed normally.
+
 ## Project layout
 
 ```text
 reviewer/          # LangGraph package (state, nodes, routes, graph, …)
 examples/          # Sample diffs + tiny failing pytest package
 tests/             # Unit + graph trajectory tests
+.github/workflows/ # PR review CI workflow
 main.py            # CLI
 requirements.txt
 ```
